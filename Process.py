@@ -6,7 +6,6 @@ from BankAccountTable import BankAccountTable
 from Blockchain import Blockchain
 from Block import Block
 import asyncio
-import yaml
 
 # Class for a single process
 class Process:
