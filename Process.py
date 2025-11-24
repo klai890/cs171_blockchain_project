@@ -16,7 +16,15 @@ class Process:
         self.port_number = port_number
         self.bank_account_table = BankAccountTable()
         self.blockchain = Blockchain()
+
+        # Paxos states
+        self.sequence_no = 0
+        
+        # Node states
         self.alive = True
+        self.is_leader = False
+        self.promises = 0
+        self.accepts = 0
 
         self.start_server()
 
