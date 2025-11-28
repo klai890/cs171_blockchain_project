@@ -10,9 +10,8 @@ class Block:
         self.amount = amount
         self.prev_hash = prev_hash
 
-        # *** A little confused here... I think I might be mixing up previous vs. current when calculating nonce and hash pointer ***
-        self.nonce = self.calculate_nonce()
-        self.hash_pointer = self.calculate_hash()
+        self.nonce = None
+        self.hash_pointer = None
 
     def calculate_hash(self):
         txns = f"{self.sender_id},{self.receiver_id},{self.amount}"
