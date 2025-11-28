@@ -7,6 +7,9 @@ class Blockchain:
 
     def add_block(self, block):
         pass
+    
+    def get_depth(self):
+        return -1
 
     def __str__(self):
         return "Blockchain representation"
