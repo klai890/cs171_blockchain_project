@@ -81,16 +81,26 @@ class Process:
 
             print(f"Received message {msg.get('type')} from process ID {msg.get('id')}")
 
+            # Ignore messages if process is failed
+            if not self.alive:
+                print("Process is failed, ignoring message")
+                # Still send a response so sender doesn't hang
+                response = {"id": self.process_id, "type": "FAILED"}
+                writer.write(json.dumps(response).encode())
+                return
+
             # Check message type
             type = msg.get('type')
 
             if type == 'PREPARE':
+                print("Processing PREPARE message...")
+                print("Ballot received:", msg.get('ballot'))
                 (proposer_seq_num, proposer_id, proposer_depth) = msg.get('ballot')
                 respond = True
 
                 # Acceptor does not accept prepare or accept messages from a contending leader if the depth 
                 # of the block being proposed is lower than the acceptor’s depth of its copy of the blockchain
-                if proposer_depth < self.blockchain.depth():
+                if proposer_depth < self.blockchain.get_depth():
                     respond = False
 
                 # If we already sent promise to a proposer w/ higher ballot => ignore
@@ -117,13 +127,19 @@ class Process:
                     writer.write(json.dumps(msg).encode())
 
             elif type == 'PROPOSE':
-                pass
+                # TODO
+                response = {"id": self.process_id, "type": "ACCEPT"}
+                writer.write(json.dumps(response).encode())
 
             elif type == 'ACCEPT':
-                pass
+                # TODO
+                response = {"id": self.process_id, "type": "ACCEPTED"}
+                writer.write(json.dumps(response).encode())
 
             elif type == 'DECIDE':
-                pass
+                # TODO
+                response = {"id": self.process_id, "type": "ACK"}
+                writer.write(json.dumps(response).encode())
 
     '''
     Handle user input
@@ -132,7 +148,8 @@ class Process:
     async def handle_user(self):
 
         while True:
-            user_input = input().strip()
+            user_input = await asyncio.get_event_loop().run_in_executor(None, input)
+            user_input = user_input.strip()
 
             # Check valid user input
             pattern = r"^moneyTransfer\(\s*([0-4])\s*,\s*([0-4])\s*,\s*(\d+(?:\.\d+)?)\s*\)$"
@@ -199,6 +216,10 @@ class Process:
                 writer.close()
                 await writer.wait_closed()
                 return reply
+            else:
+                writer.close()
+                await writer.wait_closed()
+                return None
         
         except TimeoutError:
             print(f"Timeout while waiting for Client {client_id}'s response.")
@@ -217,6 +238,7 @@ class Process:
         promises = await self.start_election()
 
         # Process PROMISES to select a value to propose.
+        print(f"Received {len(promises)} promises: {promises}")
 
 
     # This process attempts to become leader
@@ -234,7 +256,8 @@ class Process:
 
         for completed_task in as_completed(tasks):
             reply = await completed_task
-            replies.append(reply)
+            if reply and reply.get('type') == 'PROMISE':
+                replies.append(reply)
 
             # Majority?
             if len(replies) > self.num_processes / 2:
