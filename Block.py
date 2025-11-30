@@ -11,13 +11,12 @@ class Block:
         self.prev_hash = prev_hash
 
         self.nonce = None
-        self.hash_pointer = None
+        self.hash_pointer = self.calculate_hash()
 
     def calculate_hash(self):
         txns = f"{self.sender_id},{self.receiver_id},{self.amount}"
         content = f"{txns}{self.nonce}{self.prev_hash}"
-        hash_res = hashlib.sha256(content.encode('utf-8')).hexdigest()
-        return hash_res
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
     def calculate_nonce(self):
         possible_chars = string.ascii_letters + string.digits
@@ -31,7 +30,9 @@ class Block:
             hash_res = hash_bytes.hexdigest()
             if hash_res[-1] in ['0', '1', '2', '3', '4']:
                 print(f"Valid nonce found --> nonce: {nonce}, hash: {hash_res}")
-                return nonce
+                break
+
+        self.nonce = nonce
 
     def __str__(self):
         return f"Block(sender: {self.sender_id}, receiver: {self.receiver_id}, amount: {self.amount}, nonce: {self.nonce})"

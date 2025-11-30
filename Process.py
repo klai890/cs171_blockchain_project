@@ -279,8 +279,8 @@ class Process:
 
         # Otherwise, we must create a new Block (mining)
         else:
-            previous_hash = None
-            block_to_propose = Block(sender, receiver, amount, previous_hash)
+            prev_hash =  self.blockchain.get_last()
+            block_to_propose = Block(sender, receiver, amount, prev_hash)
             await block_to_propose.calculate_nonce()
 
         # Propose block
