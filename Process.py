@@ -7,7 +7,7 @@ from Blockchain import Blockchain
 from Block import Block
 from Ballot import Ballot
 import asyncio
-from asyncio import as_completed
+from asyncio import as_completed, create_task
 
 # Class for a single process
 class Process:
@@ -37,8 +37,8 @@ class Process:
         # Paxos states
         self.sequence_no = 0
         self.accept_val = None # type Block
-        self.accept_num = None # type Ballot
-        self.highest_promise = None # type Ballot
+        self.accept_num = Ballot(-1,-1,-1)
+        self.highest_promise = Ballot(-1,-1,-1)
         
         # Node states
         self.alive = True
@@ -63,7 +63,6 @@ class Process:
     # Handle incoming connections
     async def handle_conn(self, reader, writer):
         data = await reader.read(1024)
-        print("Received some data", data)
         if not data:
             writer.close()
             await writer.wait_closed()
@@ -96,16 +95,17 @@ class Process:
             if type == 'PREPARE':
                 print("Processing PREPARE message...")
                 proposer_ballot = Ballot.from_dict(msg.get('ballot'))
-                print("Ballot received:", proposer_ballot)
                 respond = True
 
                 # Acceptor does not accept prepare or accept messages from a contending leader if the depth 
                 # of the block being proposed is lower than the acceptor’s depth of its copy of the blockchain
                 if proposer_ballot.depth < self.blockchain.get_depth():
+                    print(f"Witholding Response: Proposer ballot has depth {proposer_ballot.depth}; depth {self.blockchain.get_depth()}")
                     respond = False
 
                 # If we already sent promise to a proposer w/ higher ballot => ignore
                 if self.highest_promise and self.highest_promise > proposer_ballot:
+                    print(f"Witholding Response: Highest promise sent was to {self.highest_promise}, proposer ballot is {proposer_ballot}")
                     respond = False
 
                 # Otherwise, reply with PROMISE
@@ -115,7 +115,7 @@ class Process:
                     msg = {
                         "id": self.process_id, 
                         "type": "PROMISE", 
-                        "value": self.accept_val, # can be None or a Block
+                        "value": self.accept_val.to_dict() if self.accept_val else None, # can be None or a Block
                         "ballot": send_ballot.to_dict() # proposer's ballot if no prev accepted value
                     }
 
@@ -125,7 +125,6 @@ class Process:
             elif type == 'ACCEPT':
                 print("Processing ACCEPT message...")
                 proposer_ballot = Ballot.from_dict(msg.get("ballot"))
-                print("Ballot received:", proposer_ballot)
                 block = Block.from_dict(msg.get("value"))
 
                 respond = True
@@ -133,9 +132,11 @@ class Process:
                 # An acceptor does not accept prepare or accept messages from a contending leader if the depth 
                 # of the block being proposed is lower than the acceptor’s depth of its copy of the blockchain
                 if proposer_ballot.depth < self.blockchain.get_depth():
+                    print(f"Witholding Response: Proposer ballot has depth {proposer_ballot.depth}; depth {self.blockchain.get_depth()}")
                     respond = False
 
                 if self.highest_promise != proposer_ballot:
+                    print(f"Witholding Response: Highest promise sent was to {self.highest_promise}, proposer ballot is {proposer_ballot}")
                     respond = False
 
                 if respond:
@@ -145,7 +146,7 @@ class Process:
                         "id": self.process_id,
                         "type": "ACCEPTED",
                         "value": block.to_dict(),
-                        "ballot": proposer_ballot
+                        "ballot": proposer_ballot.to_dict()
                     }
                     print("Sending message", msg)
                     writer.write(json.dumps(msg).encode())
@@ -159,6 +160,11 @@ class Process:
 
                 self.blockchain.add_block(block)
                 self.bank_account_table.update(sender, receiver, amount)
+
+                # Reinitialize seq_num, accept_val, accept_num for each new block added
+                self.sequence_no = 0
+                self.accept_num = Ballot(-1,-1,-1)
+                self.accept_val = None
 
     '''
     Handle user input
@@ -190,21 +196,17 @@ class Process:
                 
             # Failed process: Should not send or receive any messages (or respond to user input??)
             elif user_input == "failProcess":
-                print("Failing process...")
                 self.alive = False
 
             # Restart process: Resume sending and receiving messages
             elif user_input == "fixProcess":
-                print("Fixing process...")
                 self.alive = True
                 self.restore()
 
             elif user_input == "printBlockchain":
-                print("Printing blockchain...")
                 print(self.blockchain)
 
             elif user_input == "printBalance":
-                print("Printing balance...")
                 print(self.bank_account_table)
 
             else:
@@ -270,24 +272,27 @@ class Process:
         # Process PROMISES to select a block to propose.
         block_to_propose = None
 
-        # See if there is already an accepted block
-        non_bottoms = [item for item in promises if item['value'] != 'null']
+        # See if there is already an accepted block for this depth
+        non_bottoms = [item for item in promises if item['value'] != None and Ballot.from_dict(item['ballot']).depth == self.blockchain.get_depth()]
         
         # Select value with the highest process ID
         if len(non_bottoms) != 0:
-            block_to_propose = max(non_bottoms, key=lambda x: x['ballot'])['value']
+            block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
+            block_to_propose = Block.from_dict(block_to_propose['value'])
+            print("Block to propose:", block_to_propose)
 
         # Otherwise, we must create a new Block (mining)
         else:
             prev_hash =  self.blockchain.get_last()
             block_to_propose = Block(sender, receiver, amount, prev_hash)
-            await block_to_propose.calculate_nonce()
+            block_to_propose.calculate_nonce()
 
         # Propose block
-        accepteds = await self.propose(self, ballot, block_to_propose)
+        accepteds = await self.propose(ballot, block_to_propose)
 
         # Did not receive ACCEPTED from majority
         if len(accepteds) <= self.num_processes / 2:
+            print("Did not receive ACCEPTED from majority")
             return
         
         # Otherwise, send decision to all nodes
@@ -295,14 +300,12 @@ class Process:
 
     # This process attempts to become leader
     async def start_election(self, ballot):
-        print("Starting election...")
-
         # Send PREPARE to all other clients
         other_clients = self.get_other_clients()
         msg = {"id": self.process_id, "type": "PREPARE", "ballot": ballot.to_dict()} 
 
         # Await PROMISE from majority
-        tasks = [self.send_to_client(cid, msg, True) for cid in other_clients]
+        tasks = [create_task(self.send_to_client(cid, msg, True)) for cid in other_clients]
         replies = []
 
         # Proposer implicitly accepts its own ballot
@@ -311,7 +314,7 @@ class Process:
             replies.append({
                     "id": self.process_id, 
                     "type": "PROMISE", 
-                    "value": 'null',
+                    "value": None,
                     "ballot": ballot.to_dict()
             })
 
@@ -338,10 +341,10 @@ class Process:
             "id": self.process_id, 
             "type": "ACCEPT", 
             "ballot": ballot.to_dict(), 
-            "value": block_to_propose
+            "value": block_to_propose.to_dict()
         } 
 
-        tasks = [self.send_to_client(cid, msg, True) for cid in other_clients]
+        tasks = [create_task(self.send_to_client(cid, msg, True)) for cid in other_clients]
         replies = []
 
         # Implicitly accepts its own 
@@ -352,7 +355,7 @@ class Process:
                 "id": self.process_id,
                 "type": "ACCEPTED",
                 "ballot": ballot.to_dict(),
-                "value": block_to_propose,
+                "value": block_to_propose.to_dict(),
             })
 
         for completed_task in as_completed(tasks):
@@ -374,18 +377,21 @@ class Process:
 
     # This process has received majority accepted values, must decide
     async def decide(self, block, sender, receiver, amount):
-        print("Received accepted from a majority...")
-        
         # If majority accepted: Append block to self.blockchain, update self.bank_account_table.
         self.blockchain.add_block(block)
         self.bank_account_table.update(sender, receiver, amount)
+
+        # Reinitialize seq_num, accept_val, accept_num for each new block added
+        self.sequence_no = 0
+        self.accept_num = Ballot(-1,-1,-1)
+        self.accept_val = None
 
         # Send DECIDE to all
         other_clients = self.get_other_clients()
         msg = {
             "id": self.process_id, 
             "type": "DECIDE", 
-            "value": block,
+            "value": block.to_dict(),
             "sender": sender,
             "receiver": receiver,
             "amount": amount
