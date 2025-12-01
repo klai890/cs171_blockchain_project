@@ -4,14 +4,14 @@ import hashlib
 
 # Class for a single block
 class Block:
-    def __init__(self, sender_id, receiver_id, amount, prev_hash):
+    def __init__(self, sender_id, receiver_id, amount, prev_hash, hash_pointer=None, nonce=None):
         self.sender_id = sender_id
         self.receiver_id = receiver_id
         self.amount = amount
         self.prev_hash = prev_hash
 
-        self.nonce = None
-        self.hash_pointer = self.calculate_hash()
+        self.nonce = nonce if nonce else None
+        self.hash_pointer = hash_pointer if hash_pointer else self.calculate_hash()
 
     def calculate_hash(self):
         txns = f"{self.sender_id},{self.receiver_id},{self.amount}"
@@ -34,5 +34,29 @@ class Block:
 
         self.nonce = nonce
 
+    def __eq__(self, other):
+        return (self.sender_id == other.sender_id and
+                self.receiver_id == other.receiver_id and
+                self.amount == other.amount and
+                self.prev_hash == other.prev_hash and
+                self.nonce == other.nonce and
+                self.hash_pointer == other.hash_pointer)
+
+    def to_dict(self):
+        return {
+            "sender": self.sender_id,
+            "receiver": self.receiver_id,
+            "amount": self.amount,
+            "prev_hash": self.prev_hash,
+            "nonce": self.nonce,
+            "hash_pointer": self.hash_pointer
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        if not data:
+            return None
+        return cls(data["sender"], data["receiver"], data["amount"], data["prev_hash"], data["hash_pointer"], data["nonce"])
+
     def __str__(self):
-        return f"Block(sender: {self.sender_id}, receiver: {self.receiver_id}, amount: {self.amount}, nonce: {self.nonce})"
+        return f"Block(sender: {self.sender_id}, receiver: {self.receiver_id}, amount: {self.amount}, hash: {self.hash_pointer}, nonce: {self.nonce})"

@@ -22,8 +22,4 @@ class Blockchain:
         chain_str = ""
         for block in self.chain:
             chain_str += str(block) + "\n"
-
-        if len(chain_str) > 0:
-            chain_str = chain_str[:-1]
-
         return chain_str
