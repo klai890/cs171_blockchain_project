@@ -86,6 +86,8 @@ class Process:
             # Ignore messages if process is failed
             if not self.alive:
                 print("Process is failed, ignoring message")
+                response = {"id": self.process_id, "type": "FAILED"}
+                writer.write(json.dumps(response).encode())
                 return
 
             if type == 'QUERY_DEPTH':
@@ -296,6 +298,10 @@ class Process:
         while leader_attempts < 5: 
             if not self.alive:
                 print(f"Process {self.process_id} failed")
+                return
+            
+            if self.bank_account_table.valid_transaction(sender, receiver, amount) == False:
+                print(f"Transaction from {sender} to {receiver} for amount {amount} is no longer valid.")
                 return
             
             ballot = Ballot(self.sequence_no, self.process_id, self.blockchain.get_depth())
