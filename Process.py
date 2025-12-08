@@ -567,7 +567,7 @@ class Process:
             if reply and reply.get('type') == 'BLOCKCHAIN_RESPONSE':
                 # Reconstruct blockchain and bank accounts
                 blockchain_data = reply.get('blockchain')
-                self.blockchain.chain = [Block.from_dict(b) for b in blockchain_data]
+                self.blockchain.chain = [Block.from_dict(block) for block in blockchain_data]
                 
                 # Replay all transactions to rebuild bank account table
                 self.bank_account_table = BankAccountTable()
