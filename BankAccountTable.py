@@ -24,3 +24,9 @@ class BankAccountTable:
         for i in range(5):
             res += f"Process {i}: {self.table[i]}\n"
         return res
+    
+    def valid_transaction(self, sender_id, receiver_id, amount):
+        if sender_id not in range(5) or receiver_id not in range(5):
+            raise RuntimeError(f"BankAccountTable: {id} out of range")
+        
+        return self.table[int(sender_id)] >= amount
