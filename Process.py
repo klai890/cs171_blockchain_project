@@ -292,83 +292,70 @@ class Process:
 
     # First, PREPARE. If successful, PROPOSE. If successful, ACCEPT. If successful, DECIDE.
     async def begin(self, sender, receiver, amount):
-        # Tracks the attempts the leader makes to get majority -- when proposal fails, increment sequence_no and retry
-        leader_attempts = 0
+        if not self.alive:
+            print(f"Process {self.process_id} failed")
+            return
+        
+        if self.bank_account_table.valid_transaction(sender, receiver, amount) == False:
+            print(f"Transaction from {sender} to {receiver} for amount {amount} is no longer valid.")
+            return
+        
+        ballot = Ballot(self.sequence_no, self.process_id, self.blockchain.get_depth())
+        print(f"Starting Ballot: {ballot}")
 
-        while leader_attempts < 5: 
-            if not self.alive:
-                print(f"Process {self.process_id} failed")
-                return
-            
-            if self.bank_account_table.valid_transaction(sender, receiver, amount) == False:
-                print(f"Transaction from {sender} to {receiver} for amount {amount} is no longer valid.")
-                return
-            
-            ballot = Ballot(self.sequence_no, self.process_id, self.blockchain.get_depth())
-            print(f"Attempt: {leader_attempts + 1}, Starting Ballot: {ballot}")
+        promises = await self.start_election(ballot)
+        print(f"Received {len(promises)} promises: {promises}")
 
-            promises = await self.start_election(ballot)
-            print(f"Received {len(promises)} promises: {promises}")
-
-            if not self.alive:
-                print(f"Process {self.process_id} failed")
-                return
-            
-            # Did not receive a majority.
-            if len(promises) <= self.num_processes / 2:
-                print("Failed to get majority, leader retrying")
-                self.sequence_no += 1
-                leader_attempts += 1
-                await asyncio.sleep(0.5)  # small delay before retrying
-                continue
-
-            # Process PROMISES to select a block to propose.
-            block_to_propose = None
-
-            # See if there is already an accepted block for this depth
-            non_bottoms = [item for item in promises if item['value'] != None and Ballot.from_dict(item['ballot']).depth == self.blockchain.get_depth()]
-            
-            # Select value with the highest process ID
-            if len(non_bottoms) != 0:
-                block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
-                block_to_propose = Block.from_dict(block_to_propose['value'])
-                print("Block to propose:", block_to_propose)
-
-            # Otherwise, we must create a new Block (mining)
-            else:
-                if not self.alive:
-                    print(f"Process {self.process_id} failed before mining")
-                    return
-            
-                prev_hash =  self.blockchain.get_last()
-                block_to_propose = Block(sender, receiver, amount, prev_hash)
-                block_to_propose.calculate_nonce()
-
-                if not self.alive:
-                    print(f"Process {self.process_id} failed after mining")
-                    return
-
-            # Propose block
-            accepteds = await self.propose(ballot, block_to_propose)
-
-            if not self.alive:
-                print(f"Process {self.process_id} failed")
-                return
-            
-            # Did not receive ACCEPTED from majority
-            if len(accepteds) <= self.num_processes / 2:
-                print("Did not receive ACCEPTED from majority, retrying with higher ballot")
-                self.sequence_no += 1
-                leader_attempts += 1
-                await asyncio.sleep(0.5)
-                continue
-            
-            # Otherwise, send decision to all nodes
-            print(f"Consensus reached with {ballot}!")
-            await self.decide(block_to_propose, sender, receiver, amount)
+        if not self.alive:
+            print(f"Process {self.process_id} failed")
+            return
+        
+        # Did not receive a majority.
+        if len(promises) <= self.num_processes / 2:
+            print("Failed to get majority")
             return
 
-        print(f"Consensus couldn't be reached with {ballot}...")
+        # Process PROMISES to select a block to propose.
+        block_to_propose = None
+
+        # See if there is already an accepted block for this depth
+        non_bottoms = [item for item in promises if item['value'] != None and Ballot.from_dict(item['ballot']).depth == self.blockchain.get_depth()]
+        
+        # Select value with the highest process ID
+        if len(non_bottoms) != 0:
+            block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
+            block_to_propose = Block.from_dict(block_to_propose['value'])
+            print("Block to propose:", block_to_propose)
+
+        # Otherwise, we must create a new Block (mining)
+        else:
+            if not self.alive:
+                print(f"Process {self.process_id} failed before mining")
+                return
+        
+            prev_hash =  self.blockchain.get_last()
+            block_to_propose = Block(sender, receiver, amount, prev_hash)
+            block_to_propose.calculate_nonce()
+
+            if not self.alive:
+                print(f"Process {self.process_id} failed after mining")
+                return
+
+        # Propose block
+        accepteds = await self.propose(ballot, block_to_propose)
+
+        if not self.alive:
+            print(f"Process {self.process_id} failed")
+            return
+        
+        # Did not receive ACCEPTED from majority
+        if len(accepteds) <= self.num_processes / 2:
+            print("Did not receive ACCEPTED from majority")
+            return    
+            
+        # Otherwise, send decision to all nodes
+        print(f"Consensus reached with {ballot}!")
+        await self.decide(block_to_propose, sender, receiver, amount)
 
     # This process attempts to become leader
     async def start_election(self, ballot):
