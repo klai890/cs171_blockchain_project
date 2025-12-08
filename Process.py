@@ -171,6 +171,9 @@ class Process:
                         "value": block.to_dict(),
                         "ballot": proposer_ballot.to_dict()
                     }
+
+                    self.save_state_to_disk()
+                    
                     print("Sending message", msg)
                     await asyncio.sleep(3)
                     writer.write(json.dumps(msg).encode())
@@ -416,6 +419,8 @@ class Process:
                 "ballot": ballot.to_dict(),
                 "value": block_to_propose.to_dict(),
             })
+
+            self.save_state_to_disk()
 
         for completed_task in as_completed(tasks):
             reply = await completed_task
