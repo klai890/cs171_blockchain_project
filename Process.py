@@ -2,6 +2,7 @@ import re
 import sys
 import json
 import yaml
+import os
 from BankAccountTable import BankAccountTable
 from Blockchain import Blockchain
 from Block import Block
@@ -37,8 +38,8 @@ class Process:
         # Paxos states
         self.sequence_no = 0
         self.accept_val = None # type Block
-        self.accept_num = Ballot(-1,-1,-1)
-        self.highest_promise = Ballot(-1,-1,-1)
+        self.accept_num = Ballot(-1,-1,0)
+        self.highest_promise = Ballot(-1,-1,0)
         
         # Node states
         self.alive = True
@@ -78,8 +79,29 @@ class Process:
     async def parse_data(self, data, writer):
         if data:
             msg = json.loads(data.decode())
+            type = msg.get('type')
 
-            print(f"Received message {msg.get('type')} from process ID {msg.get('id')}")
+            print(f"Received message {type} from process ID {msg.get('id')}")
+
+            if type == 'QUERY_DEPTH':
+                response = {
+                    "id": self.process_id,
+                    "type": "DEPTH_RESPONSE",
+                    "depth": self.blockchain.get_depth()
+                }
+
+                writer.write(json.dumps(response).encode())
+                return
+        
+            if type == 'REQUEST_BLOCKCHAIN':
+                response = {
+                    "id": self.process_id,
+                    "type": "BLOCKCHAIN_RESPONSE",
+                    "blockchain": [block.to_dict() for block in self.blockchain.chain]
+                }
+
+                writer.write(json.dumps(response).encode())
+                return
 
             # Ignore messages if process is failed
             if not self.alive:
@@ -90,12 +112,13 @@ class Process:
                 return
 
             # Check message type
-            type = msg.get('type')
-
             if type == 'PREPARE':
                 print("Processing PREPARE message...")
                 proposer_ballot = Ballot.from_dict(msg.get('ballot'))
                 respond = True
+                
+                print(f"Process {self.process_id} blockchain depth: {self.blockchain.get_depth()}, Proposer depth: {proposer_ballot.depth}")
+                print(f"Process {self.process_id} highest promise: {self.highest_promise}")
 
                 # Acceptor does not accept prepare or accept messages from a contending leader if the depth 
                 # of the block being proposed is lower than the acceptor’s depth of its copy of the blockchain
@@ -104,18 +127,18 @@ class Process:
                     respond = False
 
                 # If we already sent promise to a proposer w/ higher ballot => ignore
-                if self.highest_promise and self.highest_promise > proposer_ballot:
+                if self.highest_promise.depth == proposer_ballot.depth and self.highest_promise > proposer_ballot:
                     print(f"Witholding Response: Highest promise sent was to {self.highest_promise}, proposer ballot is {proposer_ballot}")
                     respond = False
 
                 # Otherwise, reply with PROMISE
                 if respond:
                     self.highest_promise = proposer_ballot
-                    send_ballot = self.accept_num if self.accept_num else proposer_ballot
+                    send_ballot = self.accept_num if (self.accept_num and self.accept_num.depth == proposer_ballot.depth) else proposer_ballot
                     msg = {
                         "id": self.process_id, 
                         "type": "PROMISE", 
-                        "value": self.accept_val.to_dict() if self.accept_val else None, # can be None or a Block
+                        "value": self.accept_val.to_dict() if (self.accept_val and self.accept_num.depth == proposer_ballot.depth) else None, # can be None or a Block
                         "ballot": send_ballot.to_dict() # proposer's ballot if no prev accepted value
                     }
 
@@ -135,7 +158,7 @@ class Process:
                     print(f"Witholding Response: Proposer ballot has depth {proposer_ballot.depth}; depth {self.blockchain.get_depth()}")
                     respond = False
 
-                if self.highest_promise != proposer_ballot:
+                if self.highest_promise.depth != proposer_ballot.depth or self.highest_promise != proposer_ballot:
                     print(f"Witholding Response: Highest promise sent was to {self.highest_promise}, proposer ballot is {proposer_ballot}")
                     respond = False
 
@@ -161,10 +184,13 @@ class Process:
                 self.blockchain.add_block(block)
                 self.bank_account_table.update(sender, receiver, amount)
 
+                self.save_state_to_disk()
+
                 # Reinitialize seq_num, accept_val, accept_num for each new block added
                 self.sequence_no = 0
-                self.accept_num = Ballot(-1,-1,-1)
+                self.accept_num = Ballot(-1,-1, self.blockchain.get_depth())
                 self.accept_val = None
+                self.highest_promise = Ballot(-1,-1, self.blockchain.get_depth())
 
     '''
     Handle user input
@@ -201,7 +227,7 @@ class Process:
             # Restart process: Resume sending and receiving messages
             elif user_input == "fixProcess":
                 self.alive = True
-                self.restore()
+                await self.restore()
 
             elif user_input == "printBlockchain":
                 print(self.blockchain)
@@ -260,43 +286,79 @@ class Process:
 
     # First, PREPARE. If successful, PROPOSE. If successful, ACCEPT. If successful, DECIDE.
     async def begin(self, sender, receiver, amount):
-        ballot = Ballot(self.sequence_no, self.process_id, self.blockchain.get_depth())
-        promises = await self.start_election(ballot)
+        # Tracks the attempts the leader makes to get majority -- when proposal fails, increment sequence_no and retry
+        leader_attempts = 0
 
-        print(f"Received {len(promises)} promises: {promises}")
+        while leader_attempts < 5: 
+            if not self.alive:
+                print(f"Process {self.process_id} failed")
+                return
+            
+            ballot = Ballot(self.sequence_no, self.process_id, self.blockchain.get_depth())
+            print(f"Attempt: {leader_attempts + 1}, Starting Ballot: {ballot}")
 
-        # Did not receive a majority.
-        if len(promises) <= self.num_processes / 2:
+            promises = await self.start_election(ballot)
+            print(f"Received {len(promises)} promises: {promises}")
+
+            if not self.alive:
+                print(f"Process {self.process_id} failed")
+                return
+            
+            # Did not receive a majority.
+            if len(promises) <= self.num_processes / 2:
+                print("Failed to get majority, leader retrying")
+                self.sequence_no += 1
+                leader_attempts += 1
+                await asyncio.sleep(0.5)  # small delay before retrying
+                continue
+
+            # Process PROMISES to select a block to propose.
+            block_to_propose = None
+
+            # See if there is already an accepted block for this depth
+            non_bottoms = [item for item in promises if item['value'] != None and Ballot.from_dict(item['ballot']).depth == self.blockchain.get_depth()]
+            
+            # Select value with the highest process ID
+            if len(non_bottoms) != 0:
+                block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
+                block_to_propose = Block.from_dict(block_to_propose['value'])
+                print("Block to propose:", block_to_propose)
+
+            # Otherwise, we must create a new Block (mining)
+            else:
+                if not self.alive:
+                    print(f"Process {self.process_id} failed before mining")
+                    return
+            
+                prev_hash =  self.blockchain.get_last()
+                block_to_propose = Block(sender, receiver, amount, prev_hash)
+                block_to_propose.calculate_nonce()
+
+                if not self.alive:
+                    print(f"Process {self.process_id} failed after mining")
+                    return
+
+            # Propose block
+            accepteds = await self.propose(ballot, block_to_propose)
+
+            if not self.alive:
+                print(f"Process {self.process_id} failed")
+                return
+            
+            # Did not receive ACCEPTED from majority
+            if len(accepteds) <= self.num_processes / 2:
+                print("Did not receive ACCEPTED from majority, retrying with higher ballot")
+                self.sequence_no += 1
+                leader_attempts += 1
+                await asyncio.sleep(0.5)
+                continue
+            
+            # Otherwise, send decision to all nodes
+            print(f"Consensus reached with {ballot}!")
+            await self.decide(block_to_propose, sender, receiver, amount)
             return
 
-        # Process PROMISES to select a block to propose.
-        block_to_propose = None
-
-        # See if there is already an accepted block for this depth
-        non_bottoms = [item for item in promises if item['value'] != None and Ballot.from_dict(item['ballot']).depth == self.blockchain.get_depth()]
-        
-        # Select value with the highest process ID
-        if len(non_bottoms) != 0:
-            block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
-            block_to_propose = Block.from_dict(block_to_propose['value'])
-            print("Block to propose:", block_to_propose)
-
-        # Otherwise, we must create a new Block (mining)
-        else:
-            prev_hash =  self.blockchain.get_last()
-            block_to_propose = Block(sender, receiver, amount, prev_hash)
-            block_to_propose.calculate_nonce()
-
-        # Propose block
-        accepteds = await self.propose(ballot, block_to_propose)
-
-        # Did not receive ACCEPTED from majority
-        if len(accepteds) <= self.num_processes / 2:
-            print("Did not receive ACCEPTED from majority")
-            return
-        
-        # Otherwise, send decision to all nodes
-        await self.decide(block_to_propose, sender, receiver, amount)
+        print(f"Consensus couldn't be reached with {ballot}...")
 
     # This process attempts to become leader
     async def start_election(self, ballot):
@@ -309,7 +371,7 @@ class Process:
         replies = []
 
         # Proposer implicitly accepts its own ballot
-        if self.highest_promise < ballot:
+        if self.highest_promise < ballot or self.highest_promise.depth < ballot.depth:
             self.highest_promise = ballot
             replies.append({
                     "id": self.process_id, 
@@ -381,10 +443,13 @@ class Process:
         self.blockchain.add_block(block)
         self.bank_account_table.update(sender, receiver, amount)
 
+        self.save_state_to_disk()
+
         # Reinitialize seq_num, accept_val, accept_num for each new block added
         self.sequence_no = 0
-        self.accept_num = Ballot(-1,-1,-1)
+        self.accept_num = Ballot(-1,-1, self.blockchain.get_depth())
         self.accept_val = None
+        self.highest_promise = Ballot(-1,-1, self.blockchain.get_depth())
 
         # Send DECIDE to all
         other_clients = self.get_other_clients()
@@ -400,10 +465,132 @@ class Process:
         await asyncio.gather(*(self.send_to_client(cid, msg, False) for cid in other_clients))        
 
     # Restore state after failure.
-    def restore(self):
-        print("Restoring process state...")
+    # def restore(self):
+    #     print("Restoring process state...")
 
+    # Return filename for this process's state
+    def get_filename(self):
+        return f"process_{self.process_id}_state.json"
 
+    # Write blockhain and bank table to disk
+    def save_state_to_disk(self):
+        state = {
+            "blockchain": [block.to_dict() for block in self.blockchain.chain],
+            "bank_accounts": self.bank_account_table.table,
+            "sequence_no": self.sequence_no,
+            "accept_num": self.accept_num.to_dict(),
+            "accept_val": self.accept_val.to_dict() if self.accept_val else None,
+            "highest_promise": self.highest_promise.to_dict()
+        }
+        
+        filename = self.get_filename()
+        temp = filename + ".tmp"
+        
+        # Write to temp file first, then swap temp with actual file
+        with open(temp, 'w') as f:
+            json.dump(state, f, indent=2)
+        
+        os.replace(temp, filename)
+        print(f"Process {self.process_id} state saved to disk!")
+    
+    # Load blockhain and bank table from disk
+    def load_state_from_disk(self):
+        filename = self.get_filename()
+        
+        if not os.path.exists(filename):
+            print(f"No saved state file found for process {self.process_id}")
+            return False
+        
+        try:
+            with open(filename, 'r') as f:
+                state = json.load(f)
+            
+            # Restore blockchain
+            self.blockchain.chain = [Block.from_dict(block) for block in state["blockchain"]]
+            
+            # Restore bank accounts
+            self.bank_account_table.table = state["bank_accounts"]
+            
+            # Restore Paxos state
+            self.sequence_no = state["sequence_no"]
+            self.accept_num = Ballot.from_dict(state["accept_num"])
+            self.accept_val = Block.from_dict(state["accept_val"]) if state["accept_val"] else None
+            self.highest_promise = Ballot.from_dict(state["highest_promise"])
+            
+            print(f"Process {self.process_id} state loaded from disk")
+            print(f"Blockchain depth: {self.blockchain.get_depth()}")
+            print(f"Balances: {self.bank_account_table.table}")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading state for process {self.process_id}: {e}")
+            return False
+
+    # Restore state after failure
+    async def restore(self):
+        print(f"Process {self.process_id} restoring state after failure")
+        
+        # Load state from disk
+        loaded = self.load_state_from_disk()
+        print(f"Process {self.process_id} loaded state from disk: {loaded}")
+        
+        print(f"Process {self.process_id} checking if blockchain matches across all processes")
+        
+        other_clients = self.get_other_clients()
+        max_depth = self.blockchain.get_depth()
+        max_depth_node = self.process_id
+        
+        # Query all other nodes for their depth
+        for cid in other_clients:
+            try:
+                msg = {"id": self.process_id, "type": "QUERY_DEPTH"}
+                reply = await self.send_to_client(cid, msg, True)
+                
+                if reply and reply.get('type') == 'DEPTH_RESPONSE':
+                    depth = reply.get('depth')
+                    if depth > max_depth:
+                        max_depth = depth
+                        max_depth_node = cid
+            
+            except Exception as e:
+                print(f"Process {self.process_id} could not query process {cid}: {e}")
+                continue
+        
+        # If this process is behind --> update to get full blockchain
+        if max_depth > self.blockchain.get_depth():
+            print(f"Process {self.process_id} missing {max_depth - self.blockchain.get_depth()} blocks")
+            print(f"Process {self.process_id} requesting blockchain from process {max_depth_node}")
+            
+            msg = {"id": self.process_id, "type": "REQUEST_BLOCKCHAIN"}
+            reply = await self.send_to_client(max_depth_node, msg, True)
+            
+            if reply and reply.get('type') == 'BLOCKCHAIN_RESPONSE':
+                # Reconstruct blockchain and bank accounts
+                blockchain_data = reply.get('blockchain')
+                self.blockchain.chain = [Block.from_dict(b) for b in blockchain_data]
+                
+                # Replay all transactions to rebuild bank account table
+                self.bank_account_table = BankAccountTable()
+                for block in self.blockchain.chain:
+                    self.bank_account_table.update(block.sender_id, block.receiver_id, block.amount)
+                
+                # Reset Paxos state for current depth
+                curr_depth = self.blockchain.get_depth()
+                self.sequence_no = 0
+                self.accept_num = Ballot(-1, -1, curr_depth)
+                self.accept_val = None
+                self.highest_promise = Ballot(-1, -1, curr_depth)
+                
+                # Save restored state to disk
+                self.save_state_to_disk()
+                
+                print(f"Blockchain for process {self.process_id} restored to depth {curr_depth}")
+                print(f"Process {self.process_id} bank table: {self.bank_account_table.table}")
+        
+        else:
+            print(f"Blockchain for process {self.process_id} is up-to-date")
+        
+        print(f"Restoration complete for process {self.process_id}")
 
 '''
 Start process with given ID & port number.
@@ -418,10 +605,12 @@ async def main():
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-
     HOST = config['host']
     PORTS = config['ports']
     process = Process(process_id=process_id, host=HOST, ports=PORTS)
+   
+    process.load_state_from_disk()
+   
     await asyncio.gather(
         process.start_server(),
         process.handle_user()

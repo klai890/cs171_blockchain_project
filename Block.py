@@ -14,6 +14,9 @@ class Block:
         self.hash_pointer = hash_pointer if hash_pointer else self.calculate_hash()
 
     def calculate_hash(self):
+        # if self.nonce is None:
+        #     raise ValueError("Nonce needs to be set before calculating hash pointer")
+
         txns = f"{self.sender_id},{self.receiver_id},{self.amount}"
         content = f"{txns}{self.nonce}{self.prev_hash}"
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
@@ -23,7 +26,7 @@ class Block:
         
         while True:
             nonce = ''.join(random.choice(possible_chars) for _ in range(16))
-            txns = f"{self.sender_id},{self.receiver_id},{self.amount}" # replace with str(self)?
+            txns = f"{self.sender_id},{self.receiver_id},{self.amount}"
             
             # Concatenate txns and nonce, convert to bytes, use SHA256 to hash, convert hash to hexadecimal
             hash_bytes = hashlib.sha256(f"{txns}{nonce}".encode('utf-8'))
