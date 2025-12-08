@@ -217,7 +217,11 @@ class Process:
                 amount = float(match.group(3))
 
                 # Check that debit_node has sufficient funds
-                if self.bank_account_table.get(debit_node) >= amount and amount > 0:
+
+                if debit_node != self.process_id:
+                    print(f"Debit node must be the node the transaction is initiated on")
+
+                elif self.bank_account_table.get(debit_node) >= amount and amount > 0:
                     print(f"Processing transaction from Node {debit_node} to Node {credit_node} for amount {amount}...")
                     asyncio.create_task(self.begin(debit_node, credit_node, amount))
 
@@ -231,8 +235,8 @@ class Process:
             # Restart process: Resume sending and receiving messages
             elif user_input == "fixProcess":
                 if self.alive == False:
-                    await self.restore()
                     self.alive = True
+                    await self.restore()
 
             elif user_input == "printBlockchain":
                 print(self.blockchain)
