@@ -83,13 +83,18 @@ class Process:
 
             print(f"Received message {type} from process ID {msg.get('id')}")
 
+            # Ignore messages if process is failed
+            if not self.alive:
+                print("Process is failed, ignoring message")
+                return
+
             if type == 'QUERY_DEPTH':
                 response = {
                     "id": self.process_id,
                     "type": "DEPTH_RESPONSE",
                     "depth": self.blockchain.get_depth()
                 }
-
+                await asyncio.sleep(3)
                 writer.write(json.dumps(response).encode())
                 return
         
@@ -99,15 +104,7 @@ class Process:
                     "type": "BLOCKCHAIN_RESPONSE",
                     "blockchain": [block.to_dict() for block in self.blockchain.chain]
                 }
-
-                writer.write(json.dumps(response).encode())
-                return
-
-            # Ignore messages if process is failed
-            if not self.alive:
-                print("Process is failed, ignoring message")
-                # Still send a response so sender doesn't hang
-                response = {"id": self.process_id, "type": "FAILED"}
+                await asyncio.sleep(3)
                 writer.write(json.dumps(response).encode())
                 return
 
@@ -143,6 +140,7 @@ class Process:
                     }
 
                     print("Sending message", msg)
+                    await asyncio.sleep(3)
                     writer.write(json.dumps(msg).encode())
 
             elif type == 'ACCEPT':
@@ -172,6 +170,7 @@ class Process:
                         "ballot": proposer_ballot.to_dict()
                     }
                     print("Sending message", msg)
+                    await asyncio.sleep(3)
                     writer.write(json.dumps(msg).encode())
 
 
@@ -250,10 +249,13 @@ class Process:
             return None
         
         print(f"Sending {msg.get('type').upper()} to Client {client_id}")
+
+        
         try:
             reader, writer = await asyncio.open_connection(self.host, self.ports[client_id])
 
             # Send message
+            await asyncio.sleep(3)
             writer.write(json.dumps(msg).encode())
             await writer.drain()
 
@@ -262,9 +264,6 @@ class Process:
                 data = await reader.read(1024)
                 reply = json.loads(data.decode()) if data else None
             
-                # Simulate 3 second delay (3 sec from other client to this client)
-                await asyncio.sleep(3)
-
                 writer.close()
                 await writer.wait_closed()
                 return reply
