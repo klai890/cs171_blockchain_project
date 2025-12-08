@@ -215,7 +215,7 @@ class Process:
                 # Check that debit_node has sufficient funds
                 if self.bank_account_table.get(debit_node) >= amount and amount > 0:
                     print(f"Processing transaction from Node {debit_node} to Node {credit_node} for amount {amount}...")
-                    await self.begin(debit_node, credit_node, amount)
+                    asyncio.create_task(self.begin(debit_node, credit_node, amount))
 
                 else:
                     print(f"Node {debit_node} has insufficient funds for transaction.")
@@ -226,8 +226,9 @@ class Process:
 
             # Restart process: Resume sending and receiving messages
             elif user_input == "fixProcess":
-                self.alive = True
-                await self.restore()
+                if self.alive == False:
+                    self.alive = True
+                    await self.restore()
 
             elif user_input == "printBlockchain":
                 print(self.blockchain)
@@ -244,6 +245,10 @@ class Process:
 
     # Sends a message to other clients
     async def send_to_client(self, client_id, msg, wait_for_reply=True):
+        if self.alive == False:
+            print(f"Process {self.process_id} is failed, cannot send message to Client {client_id}")
+            return None
+        
         print(f"Sending {msg.get('type').upper()} to Client {client_id}")
         try:
             reader, writer = await asyncio.open_connection(self.host, self.ports[client_id])
@@ -463,10 +468,6 @@ class Process:
         } 
         
         await asyncio.gather(*(self.send_to_client(cid, msg, False) for cid in other_clients))        
-
-    # Restore state after failure.
-    # def restore(self):
-    #     print("Restoring process state...")
 
     # Return filename for this process's state
     def get_filename(self):
