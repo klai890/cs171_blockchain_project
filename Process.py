@@ -327,6 +327,9 @@ class Process:
         # Select value with the highest process ID
         if len(non_bottoms) != 0:
             block_to_propose = max(non_bottoms, key=lambda x: Ballot.from_dict(x['ballot']))
+            sender = block_to_propose['value']['sender']
+            receiver = block_to_propose['value']['receiver']
+            amount = block_to_propose['value']['amount']
             block_to_propose = Block.from_dict(block_to_propose['value'])
             print("Block to propose:", block_to_propose)
 
