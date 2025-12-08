@@ -231,8 +231,8 @@ class Process:
             # Restart process: Resume sending and receiving messages
             elif user_input == "fixProcess":
                 if self.alive == False:
-                    self.alive = True
                     await self.restore()
+                    self.alive = True
 
             elif user_input == "printBlockchain":
                 print(self.blockchain)
